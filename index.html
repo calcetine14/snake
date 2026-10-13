@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bernabéu Snake</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0f2a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #fff;
+  }
+  canvas {
+    display: block;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="560" height="620"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // Layout
+  const W = canvas.width, H = canvas.height;
+  const HUD = 60;            // scoreboard strip at top
+  const GRID = 20;           // 20x20 grid
+  const CELL = 24;
+  const PITCH = GRID * CELL; // 480
+  const PX = (W - PITCH) / 2;            // pitch x offset (40)
+  const PY = HUD + (H - HUD - PITCH) / 2; // pitch y offset (100)
+
+  const GOLD = '#d4af37';
+  const PURPLE = '#3d195b';
+
+  // ---------- Stadium background (pre-rendered once) ----------
+  const bg = document.createElement('canvas');
+  bg.width = W; bg.height = H;
+  drawStadium(bg.getContext('2d'));
+
+  function rand(seed) {
+    // small deterministic PRNG so the crowd looks the same every frame
+    return () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+  }
+
+  function drawStadium(g) {
+    // Night sky
+    const sky = g.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#05081c');
+    sky.addColorStop(1, '#141a3d');
+    g.fillStyle = sky;
+    g.fillRect(0, 0, W, H);
+
+    // Stands: concentric tiers around the pitch
+    const tiers = [
+      { inset: 0,  color: '#1c1f3a' },
+      { inset: 10, color: '#24284a' },
+      { inset: 20, color: '#2c3157' },
+      { inset: 30, color: '#353b66' },
+    ];
+    const sx = PX - 40, sy = PY - 40, sw = PITCH + 80, sh = PITCH + 80;
+    for (const t of tiers) {
+      g.fillStyle = t.color;
+      roundRect(g, sx + t.inset, sy + t.inset, sw - t.inset * 2, sh - t.inset * 2, 18 - t.inset / 3);
+      g.fill();
+    }
+
+    // White/gold ring separating upper and lower tier (Bernabéu trim)
+    g.strokeStyle = 'rgba(255,255,255,0.85)';
+    g.lineWidth = 2;
+    roundRect(g, sx + 19, sy + 19, sw - 38, sh - 38, 12);
+    g.stroke();
+    g.strokeStyle = GOLD;
+    g.lineWidth = 1.5;
+    roundRect(g, sx + 1, sy + 1, sw - 2, sh - 2, 18);
+    g.stroke();
+
+    // Crowd: small dots in the stands (white, purple, gold, skin tones)
+    const r = rand(1902);
+    const crowdColors = ['#ffffff', '#f2f2f2', '#e8e8ff', GOLD, '#7b4fa8', '#f1c27d', '#c68642', '#e0ac69', '#ffffff'];
+    for (let i = 0; i < 2600; i++) {
+      const x = sx + 3 + r() * (sw - 6);
+      const y = sy + 3 + r() * (sh - 6);
+      // keep dots in the stand ring, not on the pitch area
+      if (x > PX - 4 && x < PX + PITCH + 4 && y > PY - 4 && y < PY + PITCH + 4) continue;
+      g.fillStyle = crowdColors[(r() * crowdColors.length) | 0];
+      g.globalAlpha = 0.45 + r() * 0.5;
+      g.fillRect(x, y, 2, 2);
+    }
+    g.globalAlpha = 1;
+
+    // Floodlights at the four corners
+    const lights = [[sx + 8, sy + 8], [sx + sw - 8, sy + 8], [sx + 8, sy + sh - 8], [sx + sw - 8, sy + sh - 8]];
+    for (const [lx, ly] of lights) {
+      const glow = g.createRadialGradient(lx, ly, 0, lx, ly, 70);
+      glow.addColorStop(0, 'rgba(255,255,230,0.55)');
+      glow.addColorStop(1, 'rgba(255,255,230,0)');
+      g.fillStyle = glow;
+      g.fillRect(lx - 70, ly - 70, 140, 140);
+      g.fillStyle = '#fffbe0';
+      g.fillRect(lx - 5, ly - 3, 10, 6);
+    }
+
+    // Pitch: striped grass
+    for (let row = 0; row < GRID; row += 2) {
+      g.fillStyle = (row / 2) % 2 === 0 ? '#2e8b3a' : '#267a32';
+      g.fillRect(PX, PY + row * CELL, PITCH, CELL * 2);
+    }
+
+    // Pitch markings
+    g.strokeStyle = 'rgba(255,255,255,0.55)';
+    g.lineWidth = 2;
+    const m = 6; // margin of touchlines inside the pitch
+    g.strokeRect(PX + m, PY + m, PITCH - m * 2, PITCH - m * 2);
+    // halfway line + center circle + spot
+    g.beginPath();
+    g.moveTo(PX + m, PY + PITCH / 2);
+    g.lineTo(PX + PITCH - m, PY + PITCH / 2);
+    g.stroke();
+    g.beginPath();
+    g.arc(PX + PITCH / 2, PY + PITCH / 2, 50, 0, Math.PI * 2);
+    g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.6)';
+    g.beginPath();
+    g.arc(PX + PITCH / 2, PY + PITCH / 2, 3, 0, Math.PI * 2);
+    g.fill();
+    // penalty and goal areas (top and bottom)
+    const boxW = 220, boxH = 70, sixW = 100, sixH = 26;
+    for (const top of [true, false]) {
+      const y0 = top ? PY + m : PY + PITCH - m;
+      const dir = top ? 1 : -1;
+      g.strokeRect(PX + (PITCH - boxW) / 2, top ? y0 : y0 - boxH, boxW, boxH);
+      g.strokeRect(PX + (PITCH - sixW) / 2, top ? y0 : y0 - sixH, sixW, sixH);
+      // penalty arc
+      g.beginPath();
+      const spotY = y0 + dir * 50;
+      g.arc(PX + PITCH / 2, spotY, 40, top ? 0.2 * Math.PI : 1.2 * Math.PI, top ? 0.8 * Math.PI : 1.8 * Math.PI);
+      g.stroke();
+      // goal
+      g.fillStyle = 'rgba(255,255,255,0.8)';
+      g.fillRect(PX + PITCH / 2 - 24, top ? y0 - 4 : y0, 48, 4);
+    }
+
+    drawCrest(g, PX + PITCH / 2, PY + PITCH / 2);
+
+    // Subtle light wash over the pitch
+    const wash = g.createRadialGradient(PX + PITCH / 2, PY + PITCH / 2, 50, PX + PITCH / 2, PY + PITCH / 2, PITCH * 0.75);
+    wash.addColorStop(0, 'rgba(255,255,240,0.08)');
+    wash.addColorStop(1, 'rgba(0,0,0,0.18)');
+    g.fillStyle = wash;
+    g.fillRect(PX, PY, PITCH, PITCH);
+
+    // Scoreboard strip
+    const hud = g.createLinearGradient(0, 0, 0, HUD);
+    hud.addColorStop(0, '#1a1240');
+    hud.addColorStop(1, PURPLE);
+    g.fillStyle = hud;
+    g.fillRect(0, 0, W, HUD);
+    g.fillStyle = GOLD;
+    g.fillRect(0, HUD - 3, W, 3);
+  }
+
+  // Hand-drawn club crest: crown over a gold-ringed roundel with a purple
+  // diagonal band and an interlaced MCF monogram.
+  function drawCrest(g, cx, cy) {
+    const R = 28;          // roundel radius
+    const oy = cy + 10;    // roundel center (crown sits above it)
+    g.save();
+    g.globalAlpha = 0.9;
+
+    // Crown
+    const cw = 50, top = oy - R - 26, base = oy - R + 2;
+    g.fillStyle = GOLD;
+    g.strokeStyle = '#7a5c12';
+    g.lineWidth = 1;
+    // arches
+    g.beginPath();
+    g.moveTo(cx - cw / 2, base);
+    g.quadraticCurveTo(cx - cw / 2 - 2, top + 8, cx - 8, top + 6);
+    g.quadraticCurveTo(cx, top + 2, cx + 8, top + 6);
+    g.quadraticCurveTo(cx + cw / 2 + 2, top + 8, cx + cw / 2, base);
+    g.closePath();
+    g.fill();
+    g.stroke();
+    // inner arch lines
+    g.beginPath();
+    g.moveTo(cx - 12, base); g.quadraticCurveTo(cx - 10, top + 10, cx, top + 4);
+    g.moveTo(cx + 12, base); g.quadraticCurveTo(cx + 10, top + 10, cx, top + 4);
+    g.moveTo(cx, base); g.lineTo(cx, top + 4);
+    g.stroke();
+    // red cap inside the crown
+    g.fillStyle = '#b3122e';
+    g.globalAlpha = 0.55;
+    g.beginPath();
+    g.moveTo(cx - 16, base - 2);
+    g.quadraticCurveTo(cx, top + 6, cx + 16, base - 2);
+    g.closePath();
+    g.fill();
+    g.globalAlpha = 0.9;
+    // band at crown base
+    g.fillStyle = GOLD;
+    g.fillRect(cx - cw / 2 - 1, base - 4, cw + 2, 7);
+    g.strokeRect(cx - cw / 2 - 1, base - 4, cw + 2, 7);
+    // orb and cross on top
+    g.beginPath();
+    g.arc(cx, top + 1, 3.5, 0, Math.PI * 2);
+    g.fill();
+    g.stroke();
+    g.fillRect(cx - 1, top - 10, 2, 9);
+    g.fillRect(cx - 4, top - 7, 8, 2);
+
+    // Roundel: gold ring, white field, purple diagonal band
+    g.fillStyle = GOLD;
+    g.beginPath();
+    g.arc(cx, oy, R, 0, Math.PI * 2);
+    g.fill();
+    g.stroke();
+    g.fillStyle = '#ffffff';
+    g.beginPath();
+    g.arc(cx, oy, R - 4, 0, Math.PI * 2);
+    g.fill();
+    g.save();
+    g.beginPath();
+    g.arc(cx, oy, R - 4, 0, Math.PI * 2);
+    g.clip();
+    g.translate(cx, oy);
+    g.rotate(Math.PI / 4);
+    g.fillStyle = '#4b2a85';
+    g.fillRect(-R, -6, R * 2, 12);
+    g.restore();
+
+    // MCF monogram
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.font = 'bold 20px Georgia, "Times New Roman", serif';
+    g.lineWidth = 2.5;
+    g.strokeStyle = '#5a420c';
+    g.fillStyle = GOLD;
+    g.strokeText('MCF', cx, oy + 1);
+    g.fillText('MCF', cx, oy + 1);
+
+    g.restore();
+  }
+
+  function roundRect(g, x, y, w, h, r) {
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  }
+
+  // ---------- Game state ----------
+  const DIRS = {
+    up: { x: 0, y: -1 }, down: { x: 0, y: 1 },
+    left: { x: -1, y: 0 }, right: { x: 1, y: 0 },
+  };
+
+  let snake, dir, queue, food, score, best, state, stepMs, acc, last;
+
+  try { best = parseInt(localStorage.getItem('bernabeu-snake-best'), 10) || 0; } catch { best = 0; }
+
+  function reset() {
+    snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+    dir = DIRS.right;
+    queue = [];
+    score = 0;
+    stepMs = 140;
+    acc = 0;
+    placeFood();
+    state = 'ready';
+  }
+
+  function placeFood() {
+    const free = [];
+    for (let y = 0; y < GRID; y++)
+      for (let x = 0; x < GRID; x++)
+        if (!snake.some(s => s.x === x && s.y === y)) free.push({ x, y });
+    food = free.length ? free[(Math.random() * free.length) | 0] : null;
+  }
+
+  // Queue a turn. Compares against the last *queued* direction so two fast
+  // key presses inside one tick can't reverse the snake into itself.
+  function turn(name) {
+    const next = DIRS[name];
+    const ref = queue.length ? queue[queue.length - 1] : dir;
+    if (next === ref) return;
+    if (next.x === -ref.x && next.y === -ref.y) return; // no reversing
+    if (queue.length < 3) queue.push(next);
+    if (state === 'ready') state = 'playing';
+  }
+
+  function step() {
+    if (queue.length) dir = queue.shift();
+    const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+
+    if (head.x < 0 || head.y < 0 || head.x >= GRID || head.y >= GRID) return gameOver();
+
+    const eating = food && head.x === food.x && head.y === food.y;
+    // tail moves away this tick unless we're growing, so it's safe to enter
+    const body = eating ? snake : snake.slice(0, -1);
+    if (body.some(s => s.x === head.x && s.y === head.y)) return gameOver();
+
+    snake.unshift(head);
+    if (eating) {
+      score++;
+      stepMs = Math.max(60, 140 - score * 3);
+      placeFood();
+      if (!food) return gameOver(true);
+    } else {
+      snake.pop();
+    }
+  }
+
+  function gameOver(won = false) {
+    state = won ? 'won' : 'over';
+    if (score > best) {
+      best = score;
+      try { localStorage.setItem('bernabeu-snake-best', String(best)); } catch {}
+    }
+  }
+
+  // ---------- Rendering ----------
+  function render() {
+    ctx.drawImage(bg, 0, 0);
+    drawHud();
+    if (food) drawBall(food);
+    drawSnake();
+    if (state !== 'playing') drawOverlay();
+  }
+
+  function drawHud() {
+    ctx.textBaseline = 'middle';
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.textAlign = 'left';
+    ctx.fillText('ESTADIO · SNAKE', 20, HUD / 2);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#000';
+    roundRect(ctx, W / 2 - 60, 12, 120, 34, 6);
+    ctx.fill();
+    ctx.strokeStyle = GOLD;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#ffe680';
+    ctx.font = '700 22px ui-monospace, Menlo, monospace';
+    ctx.fillText(String(score).padStart(3, '0'), W / 2, 30);
+
+    ctx.textAlign = 'right';
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText('BEST ' + best, W - 20, HUD / 2);
+  }
+
+  function cellX(x) { return PX + x * CELL; }
+  function cellY(y) { return PY + y * CELL; }
+
+  function drawBall(p) {
+    const cx = cellX(p.x) + CELL / 2, cy = cellY(p.y) + CELL / 2, r = CELL / 2 - 3;
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(cx + 2, cy + r - 1, r * 0.8, r * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // pentagon patch
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + i * (Math.PI * 2 / 5);
+      ctx.lineTo(cx + Math.cos(a) * r * 0.42, cy + Math.sin(a) * r * 0.42);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawSnake() {
+    for (let i = snake.length - 1; i >= 0; i--) {
+      const s = snake[i];
+      const x = cellX(s.x) + 2, y = cellY(s.y) + 2, size = CELL - 4;
+      // white kit with gold trim
+      ctx.fillStyle = i === 0 ? '#ffffff' : (i % 2 ? '#f4f4f8' : '#e6e6ee');
+      roundRect(ctx, x, y, size, size, i === 0 ? 7 : 5);
+      ctx.fill();
+      ctx.strokeStyle = GOLD;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      if (i !== 0) {
+        ctx.fillStyle = PURPLE;
+        ctx.fillRect(x + 4, y + size / 2 - 1, size - 8, 2);
+      }
+    }
+    // eyes on the head, facing the direction of travel
+    const h = snake[0];
+    const cx = cellX(h.x) + CELL / 2, cy = cellY(h.y) + CELL / 2;
+    const fx = dir.x, fy = dir.y, px = -fy, py = fx;
+    ctx.fillStyle = PURPLE;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.arc(cx + fx * 4 + px * side * 5, cy + fy * 4 + py * side * 5, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawOverlay() {
+    ctx.fillStyle = 'rgba(5,8,28,0.6)';
+    ctx.fillRect(PX, PY, PITCH, PITCH);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const cx = PX + PITCH / 2, cy = PY + PITCH / 2;
+    let title, sub;
+    if (state === 'ready') { title = 'KICK OFF'; sub = 'Arrow keys / WASD or swipe to start'; }
+    else if (state === 'paused') { title = 'PAUSED'; sub = 'Press P or Space to resume'; }
+    else if (state === 'won') { title = '¡CAMPEONES!'; sub = 'You filled the pitch. Space to play again'; }
+    else { title = 'FULL TIME'; sub = 'Score ' + score + ' · Space or tap to play again'; }
+    ctx.fillStyle = GOLD;
+    ctx.font = '800 40px system-ui, sans-serif';
+    ctx.fillText(title, cx, cy - 16);
+    ctx.fillStyle = '#fff';
+    ctx.font = '500 15px system-ui, sans-serif';
+    ctx.fillText(sub, cx, cy + 22);
+  }
+
+  // ---------- Input ----------
+  const KEYS = {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    w: 'up', s: 'down', a: 'left', d: 'right',
+    W: 'up', S: 'down', A: 'left', D: 'right',
+  };
+
+  document.addEventListener('keydown', e => {
+    if (KEYS[e.key]) {
+      e.preventDefault();
+      if (state === 'playing' || state === 'ready') turn(KEYS[e.key]);
+      return;
+    }
+    if (e.key === ' ' || e.key === 'Enter' || e.key === 'p' || e.key === 'P') {
+      e.preventDefault();
+      if (state === 'over' || state === 'won') reset();
+      else if (state === 'playing') state = 'paused';
+      else if (state === 'paused') state = 'playing';
+    }
+  });
+
+  let touchStart = null;
+  canvas.addEventListener('touchstart', e => {
+    const t = e.changedTouches[0];
+    touchStart = { x: t.clientX, y: t.clientY };
+    e.preventDefault();
+  }, { passive: false });
+  canvas.addEventListener('touchend', e => {
+    if (!touchStart) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+    touchStart = null;
+    if (state === 'over' || state === 'won') { reset(); return; }
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+    turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+  });
+
+  // ---------- Loop ----------
+  function frame(t) {
+    if (last === undefined) last = t;
+    const dt = Math.min(t - last, 250);
+    last = t;
+    if (state === 'playing') {
+      acc += dt;
+      while (acc >= stepMs && state === 'playing') {
+        acc -= stepMs;
+        step();
+      }
+    }
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  reset();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
